@@ -39,34 +39,11 @@ embed.add_field(name='Add event:', value='`.add_event <event_name> <event_date> 
 embed.add_field(name='Delete event:', value='`.delete_event <event_name>`', inline=False)
 embed.add_field(name='Update event information:', value='`.update_event <event_name> <name|date|time|contact=val_to_update> ...`', inline=False)
 embed.add_field(name='Clear all events:', value='`.clear_events`', inline=False)
-embed.add_field(name='Count number of events:', value='`.num_events`', inline=False)
 embed.add_field(name='View details of a specific event:', value='`.view_event <event_name>`', inline=False)
+embed.add_field(name='View todo list of a specific person:', value='`.todo <person_name>`', inline=False)
 embed.add_field(name='View all events from entire/weekly/monthly calendar:', value='`.calendar [optional: <-a|-w> | <-m> <target_month>]`', inline=False)
+embed.add_field(name='Count number of events:', value='`.num_events`', inline=False)
 embed.add_field(name='Exit to stop bot from running:', value='`.exit`', inline=False)
-
-'''
-    Handling event
-'''
-# Bot will send welcome msg once ready
-@bot.event
-async def on_ready():
-    global num_events
-    print(f'\n{bot.user} has connected to Discord!\n')
-    try:
-        # Count how many events saved in database
-        count = cursor.execute('SELECT Count(*) FROM events')
-        num_events = count.fetchone()[0]
-        print(f'There are {num_events} events on record.\n')
-
-        # Send welcome message
-        guild = bot.get_guild(SERVER_ID)
-        if guild:
-            channel = discord.utils.get(guild.text_channels, name='general')
-            if channel:
-                await channel.send('Hello user! What can I help you today?')
-                await channel.send(embed=embed)
-    except Exception:
-        print('Bot is unable to send welcome message on general channel')
 
 '''
     Helper functions to validate date/time format
@@ -91,6 +68,66 @@ def validate_time_format(input_time):
                 return f'{hour}:{min:02d} {time_period}'
     except Exception as e:
         print(f'Error: {e}')
+
+def refresh_database():
+    try:
+        print('Starts refreshing...')
+        today = datetime.now().date()
+        cursor.execute('''
+            DELETE FROM events where strftime('%Y-%m-%d', event_date) < ?
+        ''',(today,))
+        sql.commit()
+        print('Finished refreshing.')
+    except Exception as e:
+        print(f'Error: {e}')
+
+def create_calendar_embed(events, title, total_events):
+    try:
+        if not events:
+            raise Exception('Nothing is on record.')
+
+        # Else start printing calendar, sorted by ascending date
+        event_list_title = 'Event Name, Event Date, Contact'
+        event_list = ''
+        events = sorted(events, key=lambda x: x[1])
+
+        for event in events:
+            event_name, event_date, event_time, contact = event
+            event_list += f'{event_name}, {event_date}, {event_time}, {contact}\n'
+
+        calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))        
+        calendar_embed.add_field(name='Number of events', value=total_events)
+        calendar_embed.add_field(name=event_list_title, value=event_list, inline=False)
+
+        return calendar_embed
+    except Exception as e:
+        print(f'Error: {e}')
+
+'''
+    Handling event
+'''
+# Bot will send welcome msg once ready
+@bot.event
+async def on_ready():
+    global num_events
+    print(f'\n{bot.user} has connected to Discord!\n')
+    try:
+        refresh_database()
+
+        # Count how many events saved in database
+        count = cursor.execute('SELECT Count(*) FROM events')
+        num_events = count.fetchone()[0]
+        print(f'There are {num_events} events on record.\n')
+
+        # Send welcome message
+        guild = bot.get_guild(SERVER_ID)
+        if guild:
+            channel = discord.utils.get(guild.text_channels, name='general')
+            if channel:
+                await channel.send('Hello user! What can I help you today?')
+                await channel.send(embed=embed)
+    except Exception:
+        print('Bot is unable to send welcome message on general channel')
 
 '''
     Handling user commands
@@ -125,7 +162,7 @@ async def add_event(ctx, *args):
         # Add event to database if not on record
         cursor.execute(
             'INSERT INTO events (event_name, event_date, event_time, contact) VALUES (?, ?, ?, ?)',
-            (event_name, formatted_date, formatted_time, contact)
+            (event_name.strip(), formatted_date, formatted_time, contact.strip())
         )
         sql.commit()
         num_events += 1
@@ -156,7 +193,7 @@ async def update_event(ctx, *args):
             if len(split_arr) == 1:
                 raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
             
-            field, val = split_arr[0], split_arr[1]
+            field, val = split_arr[0].strip(), split_arr[1].strip()
             if field == 'name':
                 name = val
             elif field == 'date':
@@ -186,7 +223,7 @@ async def update_event(ctx, *args):
         cursor.execute(
             '''
                 UPDATE events
-                SET event_name=?, event_date=?, event_time=?, event_time=?
+                SET event_name=?, event_date=?, event_time=?, contact=?
                 WHERE event_name=?;
             ''', (name, date, time, contact, args[0])
         )
@@ -225,7 +262,7 @@ async def delete_event(ctx, event_name):
         print(f'Error: {e}')
         await ctx.send(e)
 
-# Bot will display event information based on user input if receive '.view_event' command
+# Bot will display event info based on given name if receive '.view_event' command
 @bot.command()
 async def view_event(ctx, event_name):
     try:
@@ -244,6 +281,26 @@ async def view_event(ctx, event_name):
         event_embed.add_field(name='Time', value=time, inline=False)
         event_embed.add_field(name='Contact', value=contact, inline=False)
         await ctx.send(embed=event_embed)
+    except Exception as e:
+        print(f'Error: {e}')
+        ctx.send(e)
+
+# Bot will display all todo events of given contact if receive '.todo' command
+@bot.command()
+async def todo(ctx, contact):
+    try:
+        if not contact:
+            raise Exception(f'Usage: `.todo <contact>`')
+
+        cursor.execute('''SELECT * FROM events WHERE contact LIKE ? COLLATE NOCASE''', (f'%{contact.strip()}%',))
+        events = cursor.fetchall()
+        total_events = len(events)
+
+        # Create & send embed of todo list
+        calendar_embed = create_calendar_embed(events, f'Todo calendar for {contact.capitalize()}', total_events)
+        if not calendar_embed:
+            raise Exception(f'No task todo for {contact.capitalize()}.')
+        await ctx.send(embed=calendar_embed)
     except Exception as e:
         print(f'Error: {e}')
         ctx.send(e)
@@ -309,23 +366,10 @@ async def calendar(ctx, option=None, additional_arg=None):
             events = cursor.fetchall()
             total_events = len(events)
         
-        # Stop if nothing is on record
-        if not events:
+        # Create & send embed of calendar
+        calendar_embed = create_calendar_embed(events, title, total_events)
+        if not calendar_embed:
             raise Exception(no_record_msg)
-
-        # Else start printing calendar, sorted by ascending date
-        event_list_title = 'Event Name, Event Date, Contact'
-        event_list = ''
-        events = sorted(events, key=lambda x: x[1])
-
-        for event in events:
-            event_name, event_date, event_time, contact = event
-            event_list += f'{event_name}, {event_date}, {event_time}, {contact}\n'
-
-        calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))        
-        calendar_embed.add_field(name='Number of events', value=total_events)
-        calendar_embed.add_field(name=event_list_title, value=event_list, inline=False)
-
         await ctx.send(embed=calendar_embed)
     except Exception as e:
         print(f'Error: {e}')
@@ -335,12 +379,11 @@ async def calendar(ctx, option=None, additional_arg=None):
 @bot.command
 async def refresh_calendar(ctx):
     try:
-        today = datetime.now().date()
-        cursor.execute('''
-            DELETE FROM events where strftime('%Y-%m-%d', event_date) < ?
-        ''',(today,))
-        sql.commit()
-        await ctx.send(f'Calendar refreshed: All outdated events have been deleted.')
+        if num_events > 0:
+            refresh_database()
+            await ctx.send(f'Calendar refreshed: All outdated events have been deleted.')
+        else:
+            raise Exception('Nothing to be refresh on calendar')
     except Exception as e:
         await ctx.send(f'Error: {e}')
 
