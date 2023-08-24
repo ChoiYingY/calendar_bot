@@ -20,6 +20,7 @@ cursor.execute('''
         event_name TEXT,
         event_date TEXT,
         event_time TEXT,
+        location TEXT,
         contact TEXT
     )
 ''')
@@ -35,9 +36,9 @@ bot = commands.Bot(command_prefix='.', description=description, intents=intents)
 num_events = 0
 embed = discord.Embed(title=f'Usage Menu for Bot Commands', color=discord.Color.from_rgb(115, 138, 219))
 embed.add_field(name='Display usage menu:', value='`.usage`')
-embed.add_field(name='Add event:', value='`.add_event <event_name> <event_date> <event_time> <contact>`', inline=False)
+embed.add_field(name='Add event:', value='`.add_event <event_name> <event_date> <event_time> <location> <contact>`', inline=False)
 embed.add_field(name='Delete event:', value='`.delete_event <event_name>`', inline=False)
-embed.add_field(name='Update event information:', value='`.update_event <event_name> <name|date|time|contact=val_to_update> ...`', inline=False)
+embed.add_field(name='Update event information:', value='`.update_event <event_name> <name|date|time|location|contact=val_to_update> ...`', inline=False)
 embed.add_field(name='Clear all events:', value='`.clear_events`', inline=False)
 embed.add_field(name='View details of a specific event:', value='`.view_event <event_name>`', inline=False)
 embed.add_field(name='View todo list of a specific person:', value='`.todo <person_name>`', inline=False)
@@ -46,8 +47,9 @@ embed.add_field(name='Count number of events:', value='`.num_events`', inline=Fa
 embed.add_field(name='Exit to stop bot from running:', value='`.exit`', inline=False)
 
 '''
-    Helper functions to validate date/time format
+    Helper functions
 '''
+# To validate date format
 def validate_date_format(input_date):
     try:
         input_date = input_date.replace('/', '-')
@@ -55,6 +57,7 @@ def validate_date_format(input_date):
     except Exception as e:
         print(f'Error: {e}')
 
+# To validate time format
 def validate_time_format(input_time):
     try:
         match = re.fullmatch('((\d{1}|\d{2}):(\d{2})(AM|PM))', input_time, re.IGNORECASE)
@@ -69,6 +72,12 @@ def validate_time_format(input_time):
     except Exception as e:
         print(f'Error: {e}')
 
+# Search event based on given name
+def search_event(event_name):
+    cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
+    return cursor.fetchone()
+
+# Refresh database
 def refresh_database():
     try:
         print('Starts refreshing...')
@@ -81,25 +90,44 @@ def refresh_database():
     except Exception as e:
         print(f'Error: {e}')
 
+# Create a discord embed of calendar
 def create_calendar_embed(events, title, total_events):
     try:
         if not events:
             raise Exception('Nothing is on record.')
 
         # Else start printing calendar, sorted by ascending date
-        event_list_title = 'Event Name, Event Date, Contact'
         event_list = ''
         events = sorted(events, key=lambda x: x[1])
 
         for event in events:
-            event_name, event_date, event_time, contact = event
-            event_list += f'{event_name}, {event_date}, {event_time}, {contact}\n'
+            event_name, event_date, event_time, location, contact = event
+            event_list += f'{event_name}, {event_date}, {event_time}, {location}, {contact}\n'
 
         calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))        
         calendar_embed.add_field(name='Number of events', value=total_events)
-        calendar_embed.add_field(name=event_list_title, value=event_list, inline=False)
+        calendar_embed.add_field(name='Event Name, Event Date, Location, Contact', value=event_list, inline=False)
 
         return calendar_embed
+    except Exception as e:
+        print(f'Error: {e}')
+
+# Create a discord embed of an event
+def create_event_embed(title, event):
+    try:
+        if not event:
+            raise Exception('Nothing is on record.')
+
+        name, date, time, location, contact = event
+
+        event_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))        
+        event_embed.add_field(name='Name', value=name)
+        event_embed.add_field(name='Date', value=date, inline=False)
+        event_embed.add_field(name='Time', value=time, inline=False)
+        event_embed.add_field(name='Location', value=location, inline=False)
+        event_embed.add_field(name='Contact', value=contact, inline=False)
+
+        return event_embed
     except Exception as e:
         print(f'Error: {e}')
 
@@ -137,32 +165,28 @@ async def on_ready():
 async def add_event(ctx, *args):
     try:
         global num_events
-        if len(args) != 4:
+        if len(args) != 5:
             raise Exception(f'Usage: `.add_event <event_name> <event_date> <event_time> <contact>`')
 
-        event_name, event_date, event_time, contact = args
-        # Validate event date in format 'MM-DD-YYYY'
-        formatted_date = validate_date_format(event_date)
-        formatted_time = validate_time_format(event_time)
-
+        event_name, event_date, event_time, location, contact = args
+        formatted_date, formatted_time = validate_date_format(event_date), validate_time_format(event_time)
         print(f'formatted_date:{formatted_date}, formatted_time:{formatted_time}')
         
         if not formatted_date or not formatted_time:
-            raise Exception(f"Error: please make sure event date&time match format 'MM/DD/YYYY' & 'HH:MM AM/PM'/")
+            raise Exception(f"Error: please make sure event date&time match format 'MM/DD/YYYY' & 'HH:MM AM/PM'.")
     
         # Check if event time is outdated
         if formatted_date < date.today():
             raise Exception(f'Error: user cannot set past date as event time.')
             
         # Stop adding if event is already on record
-        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
-        if cursor.fetchone():
+        if search_event(event_name):
             raise Exception(f"Event '{event_name}' is already on record. Please use `.update_event` command if you would like to update event information.")
 
         # Add event to database if not on record
         cursor.execute(
-            'INSERT INTO events (event_name, event_date, event_time, contact) VALUES (?, ?, ?, ?)',
-            (event_name.strip(), formatted_date, formatted_time, contact.strip())
+            'INSERT INTO events (event_name, event_date, event_time, location, contact) VALUES (?, ?, ?, ?, ?)',
+            (event_name.strip(), formatted_date, formatted_time, location.strip(), contact.strip())
         )
         sql.commit()
         num_events += 1
@@ -176,14 +200,28 @@ async def add_event(ctx, *args):
 async def update_event(ctx, *args):
     try:
         if len(args) < 2 or len(args) > 4:
-            raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
+            raise Exception(f'Usage: `.update_event <event_name> <name|date|time|location|contact=val_to_update> ...`')
     
-        name, date, time, contact = None, None, None, None
-        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (args[0],))
-        match = cursor.fetchone()
+        event_info = {
+            'name': None,
+            'date': None,
+            'time': None,
+            'location': None,
+            'contact': None
+        }
+
+        match = search_event(args[0])
         if not match:
             raise Exception(f"Event '{args[0]}' is not on record. Please use `.add_event` command if you would like to update event information.")
         
+        match_event_info = {
+            'name': match[0],
+            'date': match[1],
+            'time': match[2],
+            'location': match[3],
+            'contact': match[4]
+        }
+
         field_val_to_update = args[1:]
 
         for field_val in field_val_to_update:
@@ -191,50 +229,40 @@ async def update_event(ctx, *args):
 
             # if given field_val string never contains '=' symbol
             if len(split_arr) == 1:
-                raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
+                raise Exception(f'Usage: `.update_event <event_name> <name|date|time|location|contact=val_to_update> ...`')
             
             field, val = split_arr[0].strip(), split_arr[1].strip()
-            if field == 'name':
-                name = val
+
+            if field == 'name' or field == 'location' or field == 'contact':
+                event_info[field] = val
             elif field == 'date':
-                date = validate_date_format(val)
-                if not date:
-                    raise Exception(f"Error: event date '{date}' does not match format 'MM/DD/YYYY'")
+                event_info['date'] = validate_date_format(val)
+                if not event_info['date']:
+                    raise Exception(f"Error: event date '{val}' does not match format 'MM/DD/YYYY'")
             elif field == 'time':
-                time = validate_time_format(val)
-                if not time:
-                    raise Exception(f"Error: event time '{time}' does not match format 'HH:MM AM/PM'")
-            elif field == 'contact':
-                contact = val
+                event_info['time'] = validate_time_format(val)
+                if not event_info['time']:
+                    raise Exception(f"Error: event time '{val}' does not match format 'HH:MM AM/PM'")
             else:
                 raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
+            
+            for field in ['name', 'date', 'time', 'location', 'contact']:
+                if not event_info[field]:
+                    event_info[field] = match_event_info[field]
         
-        if not name:
-            name = match[0]
-        if not date:
-            date = match[1]
-        if not time:
-            time = match[2]
-        if not contact:
-            contact = match[3]
-        
-        print((name, date, time, contact))
-
         cursor.execute(
             '''
                 UPDATE events
-                SET event_name=?, event_date=?, event_time=?, contact=?
-                WHERE event_name=?;
-            ''', (name, date, time, contact, args[0])
+                SET event_name=?, event_date=?, event_time=?, location=?, contact=?
+                WHERE event_name=? COLLATE NOCASE
+            ''', (event_info['name'], event_info['date'], event_info['time'], event_info['location'], event_info['contact'], args[0])
         )
         sql.commit()
 
-        update_embed = discord.Embed(title=f'Updated details of entered event', color=discord.Color.from_rgb(115, 138, 219))
-        update_embed.add_field(name='Name', value=name)
-        update_embed.add_field(name='Date', value=date, inline=False)
-        update_embed.add_field(name='Time', value=time, inline=False)
-        update_embed.add_field(name='Contact', value=contact, inline=False)
-        await ctx.send(embed=update_embed)
+        event_embed = create_event_embed('Updated information of entered event',(event_info['name'], event_info['date'], event_info['time'], event_info['location'], event_info['contact']))
+        if not event_embed:
+            raise Exception(f"Unable to print out updated information.")
+        await ctx.send(embed=event_embed)
 
     except Exception as e:
         print(f'Error: {e}')
@@ -248,13 +276,10 @@ async def delete_event(ctx, event_name):
         if not event_name:
             raise Exception(f'Usage: `.delete_event <event_name>`')
         
-        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
-        match = cursor.fetchone()
-        if not match:
+        if not search_event(event_name):
             raise Exception(f"Event '{event_name}' is not on record and so cannot be deleted.")
             
-        print(match)
-        cursor.execute('DELETE FROM events WHERE event_name=?', (event_name,))
+        cursor.execute('DELETE FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
         sql.commit()
         num_events -= 1
         await ctx.send(f"Event '{event_name}' has now deleted from record. There are currently {num_events} events on record.")
@@ -269,17 +294,13 @@ async def view_event(ctx, event_name):
         if not event_name:
             raise Exception(f'Usage: `.view_event <event_name>`')
     
-        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
-        match = cursor.fetchone()
-        if not match:
+        matched_event = search_event(event_name)
+        if not matched_event:
             raise Exception(f"Event '{event_name}' is not on record.")
         
-        name, date, time, contact = match
-        event_embed = discord.Embed(title='Event details', color=discord.Color.from_rgb(115, 138, 219))
-        event_embed.add_field(name='Name', value=name)
-        event_embed.add_field(name='Date', value=date, inline=False)
-        event_embed.add_field(name='Time', value=time, inline=False)
-        event_embed.add_field(name='Contact', value=contact, inline=False)
+        event_embed = create_event_embed('Event information', matched_event)
+        if not event_embed:
+            raise Exception(f"Unable to print out updated information.")
         await ctx.send(embed=event_embed)
     except Exception as e:
         print(f'Error: {e}')
@@ -333,28 +354,21 @@ async def calendar(ctx, option=None, additional_arg=None):
                 # format start & end of curr week to string
                 start = today - timedelta(days=today.weekday())
                 end = start + timedelta(days=6)
-                start = start.strftime('%Y-%m-%d')
-                end = end.strftime('%Y-%m-%d')
+                start, end = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
 
                 title += f'Week of {start}'
                 no_record_msg = 'There is currently no event on record for current week.'
             else:
-                target_year = today.year
-                target_month = today.month
-                if additional_arg:
-                    target_month = int(additional_arg)
-                    no_record_msg = 'There is currently no event on record for given month.'
-                else:
-                    no_record_msg = 'There is currently no event on record for current month.'
-
+                target_year, target_month = today.year, int(additional_arg) if additional_arg else today.month
+                no_record_msg = 'There is currently no event on record for given month.' if additional_arg else 'There is currently no event on record for current month.'
+                
                 if target_month < today.month:
                     raise Exception(f'Note: Given target_month should be in range from current month - December.')
 
                 date_obj = datetime(target_year, target_month, 1)
                 title += date_obj.strftime('%B')
 
-                start = f'{target_year:04d}-{target_month:02d}-01'
-                end = f'{target_year:04d}-{target_month:02d}-31'
+                start, end = f'{target_year:04d}-{target_month:02d}-01', f'{target_year:04d}-{target_month:02d}-31'
 
             print(f'start:{start} - end:{end}\n')
 
