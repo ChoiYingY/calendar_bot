@@ -41,7 +41,7 @@ embed.add_field(name='Update event information:', value='`.update_event <event_n
 embed.add_field(name='Clear all events:', value='`.clear_events`', inline=False)
 embed.add_field(name='Count number of events:', value='`.num_events`', inline=False)
 embed.add_field(name='View details of a specific event:', value='`.view_event <event_name>`', inline=False)
-embed.add_field(name='View all events from entire/weekly/monthly calendar:', value='`.calendar [optional: <-a|-w|-m>]`', inline=False)
+embed.add_field(name='View all events from entire/weekly/monthly calendar:', value='`.calendar [optional: <-a|-w> | <-m> <target_month>]`', inline=False)
 embed.add_field(name='Exit to stop bot from running:', value='`.exit`', inline=False)
 
 '''
@@ -73,8 +73,8 @@ async def on_ready():
 '''
 def validate_date_format(input_date):
     try:
-        input_date = input_date.replace('-', '/')
-        return datetime.strptime(input_date, '%m/%d/%Y').date()
+        input_date = input_date.replace('/', '-')
+        return datetime.strptime(input_date, '%m-%d-%Y').date()
     except Exception as e:
         print(f'Error: {e}')
 
@@ -88,8 +88,7 @@ def validate_time_format(input_time):
             if hour <= 0 or hour >= 13 or min < 0 or min > 59:
                 raise Exception(f'invalid hour or min -> {hour}:{min}.')
             else:
-                min = '0'+ str(min) if min < 10 else str(min)
-                return f'{hour}:{min} {time_period}'
+                return f'{hour}:{min:02d} {time_period}'
     except Exception as e:
         print(f'Error: {e}')
 
@@ -105,9 +104,11 @@ async def add_event(ctx, *args):
             raise Exception(f'Usage: `.add_event <event_name> <event_date> <event_time> <contact>`')
 
         event_name, event_date, event_time, contact = args
-        # Validate event date in format 'MM/DD/YYYY'
+        # Validate event date in format 'MM-DD-YYYY'
         formatted_date = validate_date_format(event_date)
         formatted_time = validate_time_format(event_time)
+
+        print(f'formatted_date:{formatted_date}, formatted_time:{formatted_time}')
         
         if not formatted_date or not formatted_time:
             raise Exception(f"Error: please make sure event date&time match format 'MM/DD/YYYY' & 'HH:MM AM/PM'/")
@@ -119,7 +120,7 @@ async def add_event(ctx, *args):
         # Stop adding if event is already on record
         cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
         if cursor.fetchone():
-            raise Exception(f'Event {event_name} is already on record. Please use `.update_event` command if you would like to update event information.')
+            raise Exception(f"Event '{event_name}' is already on record. Please use `.update_event` command if you would like to update event information.")
 
         # Add event to database if not on record
         cursor.execute(
@@ -144,7 +145,7 @@ async def update_event(ctx, *args):
         cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (args[0],))
         match = cursor.fetchone()
         if not match:
-            raise Exception(f'Event {args[0]} is not on record. Please use `.add_event` command if you would like to update event information.')
+            raise Exception(f"Event '{args[0]}' is not on record. Please use `.add_event` command if you would like to update event information.")
         
         field_val_to_update = args[1:]
 
@@ -213,13 +214,13 @@ async def delete_event(ctx, event_name):
         cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
         match = cursor.fetchone()
         if not match:
-            raise Exception(f'Event {event_name} is not on record and so cannot be deleted.')
+            raise Exception(f"Event '{event_name}' is not on record and so cannot be deleted.")
             
         print(match)
         cursor.execute('DELETE FROM events WHERE event_name=?', (event_name,))
         sql.commit()
         num_events -= 1
-        await ctx.send(f'Event {event_name} has now deleted from record. There are currently {num_events} events on record.')
+        await ctx.send(f"Event '{event_name}' has now deleted from record. There are currently {num_events} events on record.")
     except Exception as e:
         print(f'Error: {e}')
         await ctx.send(e)
@@ -234,7 +235,7 @@ async def view_event(ctx, event_name):
         cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
         match = cursor.fetchone()
         if not match:
-            raise Exception(f'Event {event_name} is not on record.')
+            raise Exception(f"Event '{event_name}' is not on record.")
         
         name, date, time, contact = match
         event_embed = discord.Embed(title='Event details', color=discord.Color.from_rgb(115, 138, 219))
@@ -247,14 +248,16 @@ async def view_event(ctx, event_name):
         print(f'Error: {e}')
         ctx.send(e)
 
-# Bot will list all events (of all time/curr week/curr month) stored in database if receive '.calendar' command
+# Bot will list all events (of all time OR curr week OR curr/given month) stored in database if receive '.calendar' command
 @bot.command()
-async def calendar(ctx, option=None):
+async def calendar(ctx, option=None, additional_arg=None):
     global num_events
     try:
         if option and option != '-a' and option != '-w' and option != '-m':
-            raise Exception(f'Usage: `.calendar [optional: <-a|-w|-m>]`')
+            raise Exception(f'Usage: `.calendar [optional: <-a|-w> | <-m> <target_month>]`')
 
+        events = None
+        total_events = 0
         title = 'Calendar - '
         no_record_msg = 'There is currently no event on record. Start adding by using `.add_event` command now!'
         
@@ -264,49 +267,82 @@ async def calendar(ctx, option=None):
             cursor.execute('SELECT * FROM events')
             events = cursor.fetchall()
             title += 'Current semester'
-            num_events = len(events)
+            total_events = num_events = len(events)
         else:
-            # Calculate start & end date of current week/month for calendar
+            # Calculate start & end date of current week/month or given month for calendar
             today = datetime.now()
+    
             if option == '-w':
+                # format start & end of curr week to string
                 start = today - timedelta(days=today.weekday())
                 end = start + timedelta(days=6)
+                start = start.strftime('%Y-%m-%d')
+                end = end.strftime('%Y-%m-%d')
+
+                title += f'Week of {start}'
                 no_record_msg = 'There is currently no event on record for current week.'
             else:
-                start = today.replace(day=1)
-                end = today.replace(day=1, month=today.month+1) - timedelta(days=1)
-                no_record_msg = 'There is currently no event on record for current month.'
+                target_year = today.year
+                target_month = today.month
+                if additional_arg:
+                    target_month = int(additional_arg)
+                    no_record_msg = 'There is currently no event on record for given month.'
+                else:
+                    no_record_msg = 'There is currently no event on record for current month.'
 
-            start = start.strftime('%m/%d/%Y')
-            end = end.strftime('%m/%d/%Y')
-            print(f'start:{start}-end:{end}')
+                if target_month < today.month:
+                    raise Exception(f'Note: Given target_month should be in range from current month - December.')
+
+                date_obj = datetime(target_year, target_month, 1)
+                title += date_obj.strftime('%B')
+
+                start = f'{target_year:04d}-{target_month:02d}-01'
+                end = f'{target_year:04d}-{target_month:02d}-31'
+
+            print(f'start:{start} - end:{end}\n')
 
             # Find all events during given time range
             cursor.execute('''
                 SELECT * FROM events
-                WHERE event_date BETWEEN ? AND ?
+                WHERE strftime('%Y-%m-%d', event_date) BETWEEN ? AND ?
             ''', (start, end))
             events = cursor.fetchall()
-            title += f'Week of {date.today()}'
+            total_events = len(events)
         
         # Stop if nothing is on record
         if not events:
             raise Exception(no_record_msg)
 
-        # Else start printing calendar
+        # Else start printing calendar, sorted by ascending date
         event_list_title = 'Event Name, Event Date, Contact'
         event_list = ''
+        events = sorted(events, key=lambda x: x[1])
+
         for event in events:
             event_name, event_date, event_time, contact = event
-            event_list += f'{event_name}, {event_date}, {event_time}, {contact}'
+            event_list += f'{event_name}, {event_date}, {event_time}, {contact}\n'
 
-        calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))
-        calendar_embed.add_field(name='Number of events', value=num_events)
+        calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))        
+        calendar_embed.add_field(name='Number of events', value=total_events)
         calendar_embed.add_field(name=event_list_title, value=event_list, inline=False)
+
         await ctx.send(embed=calendar_embed)
     except Exception as e:
         print(f'Error: {e}')
         await ctx.send(e)
+
+# Bot will refresh calendar & remove outdated event(s) from database if receive '.refresh_calendar' command
+@bot.command
+async def refresh_calendar(ctx):
+    try:
+        today = datetime.now().date()
+        cursor.execute('''
+            DELETE FROM events where strftime('%Y-%m-%d', event_date) < ?
+        ''',(today,))
+        sql.commit()
+        await ctx.send(f'Calendar refreshed: All outdated events have been deleted.')
+    except Exception as e:
+        await ctx.send(f'Error: {e}')
 
 # Bot will clear all events stored in database if receive '.clear_events' command
 @bot.command()
