@@ -1,6 +1,6 @@
 import os
 import re
-import datetime
+from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 
 import sqlite3
@@ -36,11 +36,12 @@ num_events = 0
 embed = discord.Embed(title=f'Usage Menu for Bot Commands', color=discord.Color.from_rgb(115, 138, 219))
 embed.add_field(name='Display usage menu:', value='`.usage`')
 embed.add_field(name='Add event:', value='`.add_event <event_name> <event_date> <event_time> <contact>`', inline=False)
-embed.add_field(name='Update event:', value='`.update_event <event_name> <date|time|contact=val_to_update> ...`', inline=False)
 embed.add_field(name='Delete event:', value='`.delete_event <event_name>`', inline=False)
-embed.add_field(name='Count number of events:', value='`.num_events`', inline=False)
-embed.add_field(name='View event calendar:', value='`.calendar`', inline=False)
+embed.add_field(name='Update event information:', value='`.update_event <event_name> <name|date|time|contact=val_to_update> ...`', inline=False)
 embed.add_field(name='Clear all events:', value='`.clear_events`', inline=False)
+embed.add_field(name='Count number of events:', value='`.num_events`', inline=False)
+embed.add_field(name='View details of a specific event:', value='`.view_event <event_name>`', inline=False)
+embed.add_field(name='View all events from entire/weekly/monthly calendar:', value='`.calendar [optional: <-a|-w|-m>]`', inline=False)
 embed.add_field(name='Exit to stop bot from running:', value='`.exit`', inline=False)
 
 '''
@@ -55,7 +56,7 @@ async def on_ready():
         # Count how many events saved in database
         count = cursor.execute('SELECT Count(*) FROM events')
         num_events = count.fetchone()[0]
-        print(f'There are {num_events} events on record.')
+        print(f'There are {num_events} events on record.\n')
 
         # Send welcome message
         guild = bot.get_guild(SERVER_ID)
@@ -73,7 +74,7 @@ async def on_ready():
 def validate_date_format(input_date):
     try:
         input_date = input_date.replace('-', '/')
-        return datetime.datetime.strptime(input_date, '%m/%d/%Y').date()
+        return datetime.strptime(input_date, '%m/%d/%Y').date()
     except Exception as e:
         print(f'Error: {e}')
 
@@ -85,7 +86,7 @@ def validate_time_format(input_time):
             min = int(match.group(3))
             time_period = match.group(4).upper()
             if hour <= 0 or hour >= 13 or min < 0 or min > 59:
-                print(f'invalid hour or min - {hour}:{min}')
+                raise Exception(f'invalid hour or min -> {hour}:{min}.')
             else:
                 min = '0'+ str(min) if min < 10 else str(min)
                 return f'{hour}:{min} {time_period}'
@@ -95,66 +96,55 @@ def validate_time_format(input_time):
 '''
     Handling user commands
 '''
-# Bot will add event based on user input if receive '.add_event <event_name> <event_date> <contact>' command
+# Bot will add event based on user input if receive '.add_event' command
 @bot.command()
 async def add_event(ctx, *args):
-    global num_events
-    if len(args) != 4:
-        await ctx.send(f'Usage: `.add_event <event_name> <event_date> <event_time> <contact>`')
-        return
-
-    event_name, event_date, event_time, contact = args
     try:
+        global num_events
+        if len(args) != 4:
+            raise Exception(f'Usage: `.add_event <event_name> <event_date> <event_time> <contact>`')
+
+        event_name, event_date, event_time, contact = args
         # Validate event date in format 'MM/DD/YYYY'
         formatted_date = validate_date_format(event_date)
         formatted_time = validate_time_format(event_time)
         
-        if not formatted_date:
-            await ctx.send(f"Error: event date '{event_date}' does not match format 'MM/DD/YYYY'")
-            return
-        if not formatted_time:
-            await ctx.send(f"Error: event time '{event_time}' does not match format 'HH:MM AM/PM'")
-            return
-    except Exception as e:
-        await ctx.send(f'Error: unable to validate event date/time. Try entering command again.')
-        return
+        if not formatted_date or not formatted_time:
+            raise Exception(f"Error: please make sure event date&time match format 'MM/DD/YYYY' & 'HH:MM AM/PM'/")
     
-    # Add event to database if time is not outdated & not on record
-    try:
-        if formatted_date >= datetime.date.today():
-            # stop adding if event is already on record
-            cursor.execute('SELECT * FROM events WHERE event_name=?', (event_name,))
-            if cursor.fetchone():
-                await ctx.send(f'Event {event_name} is already on record. Please use `.update_event` command if you would like to update event information.')
-                return
+        # Check if event time is outdated
+        if formatted_date < date.today():
+            raise Exception(f'Error: user cannot set past date as event time.')
+            
+        # Stop adding if event is already on record
+        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
+        if cursor.fetchone():
+            raise Exception(f'Event {event_name} is already on record. Please use `.update_event` command if you would like to update event information.')
 
-            cursor.execute(
-                'INSERT INTO events (event_name, event_date, event_time, contact) VALUES (?, ?, ?, ?)',
-                (event_name, formatted_date, formatted_time, contact)
-            )
-            sql.commit()
-            num_events += 1
-            await ctx.send(f'Event has added successfully for User {str(ctx.author.name)}. There are currently {num_events} events on record.')
-        else:
-            await ctx.send(f'Error: user cannot set past date as event time.')
+        # Add event to database if not on record
+        cursor.execute(
+            'INSERT INTO events (event_name, event_date, event_time, contact) VALUES (?, ?, ?, ?)',
+            (event_name, formatted_date, formatted_time, contact)
+        )
+        sql.commit()
+        num_events += 1
+        await ctx.send(f'Event has added successfully for User {str(ctx.author.name)}. There are currently {num_events} events on record.')
     except Exception as e:
         print(f'Error: {e}')
-        await ctx.send(f'Error: unable to add event. Try entering command again.')
+        await ctx.send(e)
 
-# Bot will update event based on user input if receive '.update_event <event_name> <field=val_to_update>' command
+# Bot will update event based on user input if receive '.update_event' command
 @bot.command()
 async def update_event(ctx, *args):
-    if len(args) < 2 or len(args) > 4:
-        await ctx.send(f'Usage: `.update_event <event_name> <date|time|contact=val_to_update> ...`')
-        return
-    
     try:
-        event_name, event_date, event_time, contact = args[0], None, None, None
-        cursor.execute('SELECT * FROM events WHERE event_name=?', (event_name,))
+        if len(args) < 2 or len(args) > 4:
+            raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
+    
+        name, date, time, contact = None, None, None, None
+        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (args[0],))
         match = cursor.fetchone()
         if not match:
-            await ctx.send(f'Event {event_name} is not on record. Please use `.add_event` command if you would like to update event information.')
-            return
+            raise Exception(f'Event {args[0]} is not on record. Please use `.add_event` command if you would like to update event information.')
         
         field_val_to_update = args[1:]
 
@@ -163,131 +153,202 @@ async def update_event(ctx, *args):
 
             # if given field_val string never contains '=' symbol
             if len(split_arr) == 1:
-                await ctx.send(f'Usage: `.update_event <event_name> <date|time|contact=val_to_update> ...`')
-                return
+                raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
             
             field, val = split_arr[0], split_arr[1]
-            if field == 'date':
-                event_date = validate_date_format(val)
-                if not event_date:
-                    await ctx.send(f"Error: event date '{event_date}' does not match format 'MM/DD/YYYY'")
-                    return
+            if field == 'name':
+                name = val
+            elif field == 'date':
+                date = validate_date_format(val)
+                if not date:
+                    raise Exception(f"Error: event date '{date}' does not match format 'MM/DD/YYYY'")
             elif field == 'time':
-                event_time = validate_time_format(val)
-                if not event_time:
-                    await ctx.send(f"Error: event date '{event_time}' does not match format 'HH:MM AM/PM'")
-                    return
+                time = validate_time_format(val)
+                if not time:
+                    raise Exception(f"Error: event time '{time}' does not match format 'HH:MM AM/PM'")
             elif field == 'contact':
                 contact = val
             else:
-                await ctx.send(f'Usage: `.update_event <event_name> <date|time|contact=val_to_update> ...`')
-                return
+                raise Exception(f'Usage: `.update_event <event_name> <name|date|time|contact=val_to_update> ...`')
         
-        if not event_date:
-            event_date = match[1]
-        if not event_time:
-            event_time = match[2]
+        if not name:
+            name = match[0]
+        if not date:
+            date = match[1]
+        if not time:
+            time = match[2]
         if not contact:
             contact = match[3]
         
-        print((event_name, event_date, event_time, contact))
+        print((name, date, time, contact))
 
         cursor.execute(
             '''
                 UPDATE events
-                SET event_date=?, event_time=?, event_time=?
+                SET event_name=?, event_date=?, event_time=?, event_time=?
                 WHERE event_name=?;
-            ''', (event_date, event_time, contact, event_name)
+            ''', (name, date, time, contact, args[0])
         )
         sql.commit()
 
-        embed = discord.Embed(title=f'Updated detail of Event {event_name}', color=discord.Color.from_rgb(115, 138, 219))
-        embed.add_field(name='Date', value=event_date)
-        embed.add_field(name='Time', value=event_time, inline=False)
-        embed.add_field(name='Contact', value=contact, inline=False)
-        await ctx.send(embed=embed)
+        update_embed = discord.Embed(title=f'Updated details of entered event', color=discord.Color.from_rgb(115, 138, 219))
+        update_embed.add_field(name='Name', value=name)
+        update_embed.add_field(name='Date', value=date, inline=False)
+        update_embed.add_field(name='Time', value=time, inline=False)
+        update_embed.add_field(name='Contact', value=contact, inline=False)
+        await ctx.send(embed=update_embed)
 
     except Exception as e:
         print(f'Error: {e}')
-        await ctx.send(f'Error: unable to update event. Try entering command again.')
+        await ctx.send(e)
 
-# Bot will delete event based on user input if receive '.delete_event <event_name>' command
+# Bot will delete event based on user input if receive '.delete_event' command
 @bot.command()
 async def delete_event(ctx, event_name):
     global num_events
-    if not event_name:
-        await ctx.send(f'Usage: `.delete_event <event_name>`.')
-        return
-    
-    cursor.execute('SELECT * FROM events WHERE event_name=?', (event_name,))
-    match = cursor.fetchone()
-    if match:
+    try:
+        if not event_name:
+            raise Exception(f'Usage: `.delete_event <event_name>`')
+        
+        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
+        match = cursor.fetchone()
+        if not match:
+            raise Exception(f'Event {event_name} is not on record and so cannot be deleted.')
+            
         print(match)
         cursor.execute('DELETE FROM events WHERE event_name=?', (event_name,))
         sql.commit()
         num_events -= 1
         await ctx.send(f'Event {event_name} has now deleted from record. There are currently {num_events} events on record.')
-    else:
-        await ctx.send(f'Event {event_name} is not on record and so cannot be deleted.')
-        return
+    except Exception as e:
+        print(f'Error: {e}')
+        await ctx.send(e)
 
-# Bot will lists all events stored in database if receive '.calendar' command
+# Bot will display event information based on user input if receive '.view_event' command
+@bot.command()
+async def view_event(ctx, event_name):
+    try:
+        if not event_name:
+            raise Exception(f'Usage: `.view_event <event_name>`')
+    
+        cursor.execute('SELECT * FROM events WHERE event_name=? COLLATE NOCASE', (event_name,))
+        match = cursor.fetchone()
+        if not match:
+            raise Exception(f'Event {event_name} is not on record.')
+        
+        name, date, time, contact = match
+        event_embed = discord.Embed(title='Event details', color=discord.Color.from_rgb(115, 138, 219))
+        event_embed.add_field(name='Name', value=name)
+        event_embed.add_field(name='Date', value=date, inline=False)
+        event_embed.add_field(name='Time', value=time, inline=False)
+        event_embed.add_field(name='Contact', value=contact, inline=False)
+        await ctx.send(embed=event_embed)
+    except Exception as e:
+        print(f'Error: {e}')
+        ctx.send(e)
+
+# Bot will list all events (of all time/curr week/curr month) stored in database if receive '.calendar' command
 @bot.command()
 async def calendar(ctx, option=None):
     global num_events
-    if option and option != '-i':
-        await ctx.send(f'Usage: `.calendar <-i [optional]>`')
-        return
+    try:
+        if option and option != '-a' and option != '-w' and option != '-m':
+            raise Exception(f'Usage: `.calendar [optional: <-a|-w|-m>]`')
 
-    # Obtain list of events from database
-    cursor.execute('SELECT rowid, * FROM events')
-    events = cursor.fetchall()
-    num_events = len(events)
-    event_list_title = 'Event ID, Event Name, Date/Deadline, Contact' if option else 'Event Name, Event Date, Contact'
+        title = 'Calendar - '
+        no_record_msg = 'There is currently no event on record. Start adding by using `.add_event` command now!'
+        
+        # Display entire calendar / calendar of the week
+        if not option or option == '-a':
+            # Obtain list of events from database
+            cursor.execute('SELECT * FROM events')
+            events = cursor.fetchall()
+            title += 'Current semester'
+            num_events = len(events)
+        else:
+            # Calculate start & end date of current week/month for calendar
+            today = datetime.now()
+            if option == '-w':
+                start = today - timedelta(days=today.weekday())
+                end = start + timedelta(days=6)
+                no_record_msg = 'There is currently no event on record for current week.'
+            else:
+                start = today.replace(day=1)
+                end = today.replace(day=1, month=today.month+1) - timedelta(days=1)
+                no_record_msg = 'There is currently no event on record for current month.'
 
-    if events:
+            start = start.strftime('%m/%d/%Y')
+            end = end.strftime('%m/%d/%Y')
+            print(f'start:{start}-end:{end}')
+
+            # Find all events during given time range
+            cursor.execute('''
+                SELECT * FROM events
+                WHERE event_date BETWEEN ? AND ?
+            ''', (start, end))
+            events = cursor.fetchall()
+            title += f'Week of {date.today()}'
+        
+        # Stop if nothing is on record
+        if not events:
+            raise Exception(no_record_msg)
+
+        # Else start printing calendar
+        event_list_title = 'Event Name, Event Date, Contact'
         event_list = ''
         for event in events:
-            id, event_name, event_date, event_time, contact = event
-            event_detail = f'{event_name}, {event_date}, {event_time}, {contact}'
-            event_list += f'\n{id}, {event_detail}' if option else event_detail
+            event_name, event_date, event_time, contact = event
+            event_list += f'{event_name}, {event_date}, {event_time}, {contact}'
 
-        embed = discord.Embed(title=f'Calendar - Week of {datetime.date.today()}', color=discord.Color.from_rgb(115, 138, 219))
-        embed.add_field(name='Number of events', value=num_events)
-        embed.add_field(name=event_list_title, value=event_list, inline=False)
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send(f'There is currently no event on record. Start adding by using `.add_event` command now!')
-
+        calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))
+        calendar_embed.add_field(name='Number of events', value=num_events)
+        calendar_embed.add_field(name=event_list_title, value=event_list, inline=False)
+        await ctx.send(embed=calendar_embed)
+    except Exception as e:
+        print(f'Error: {e}')
+        await ctx.send(e)
 
 # Bot will clear all events stored in database if receive '.clear_events' command
 @bot.command()
 async def clear_events(ctx):
-    global num_events
-    cursor.execute('DELETE FROM events')
-    sql.commit()
-    num_events = 0
-    await ctx.send(f'Event list has cleared successfully.')
+    try:
+        global num_events
+        cursor.execute('DELETE FROM events')
+        sql.commit()
+        num_events = 0
+        await ctx.send(f'Event list has cleared successfully.')
+    except Exception as e:
+        await ctx.send(f'Error: {e}')
 
 # Bot will list number of events stored in database if receive '.num_events' command
 @bot.command()
 async def num_events(ctx):
-    await ctx.send(f'There are currently {num_events} on the record.')
+    try:
+        await ctx.send(f'There are currently {num_events} events on the record.')
+    except Exception as e:
+        await ctx.send(f'Error: {e}')
 
 # Bot will print usage menu if receive '.usage' command
 @bot.command()
 async def usage(ctx):
-    await ctx.send(embed=embed)
+    try:
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f'Error: {e}')
 
-# Bot will close database connection & go offline if receive '.bye' command
+
+# Bot will close database connection & go offline if receive '.exit' command
 @bot.command()
 async def exit(ctx):
-    cursor.close()
-    sql.close()
-
-    await ctx.send('I will now go offline. See you later!')
-    await bot.close()
-    exit(1)
+    try:
+        cursor.close()
+        sql.close()
+        await ctx.send('I will now go offline. See you later!')
+        await bot.close()
+        exit(1)
+    except Exception as e:
+        await ctx.send(f'Error: {e}')
+        exit(0)
 
 '''
     Running main function
