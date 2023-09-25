@@ -34,6 +34,11 @@ cursor.execute('''
 ''')
 sql.commit()
 
+color = {
+    'blue': discord.Color.from_rgb(115, 138, 219),
+    'red': discord.Color.from_rgb(255, 0, 0)
+}
+
 # Set up discord bot connection
 description = ''' Help command Description '''
 intents = discord.Intents.all()
@@ -78,6 +83,25 @@ def validate_time_format(input_time):
                 raise Exception(f'invalid hour or min -> {hour}:{min}.')
             else:
                 return f'{hour}:{min:02d} {time_period}'
+    except Exception as e:
+        print(f'Error: {e}')
+
+# get all events from database
+def get_all_events():
+    try:
+        cursor.execute('SELECT * FROM events')
+        return cursor.fetchall()
+    except Exception as e:
+        print(f'Error: {e}')
+
+# get all upcoming events within a time range from database
+def get_upcoming_events(start, end):
+    try:
+        cursor.execute('''
+        SELECT * FROM events
+        WHERE strftime('%Y-%m-%d', event_date) BETWEEN ? AND ?
+        ''', (start, end))
+        return cursor.fetchall()
     except Exception as e:
         print(f'Error: {e}')
 
@@ -129,7 +153,7 @@ def refresh_database():
         print(f'Error: {e}')
 
 # Create a discord embed of calendar
-def create_calendar_embed(title, events):
+def create_calendar_embed(title, events, color):
     try:
         if not events:
             raise Exception('Nothing is on record.')
@@ -142,7 +166,7 @@ def create_calendar_embed(title, events):
             event_name, event_date, event_time, location, contact = event
             event_list += f'{event_name}, {event_date}, {event_time}, {location}, {contact}\n'
 
-        calendar_embed = discord.Embed(title=title, color=discord.Color.from_rgb(115, 138, 219))        
+        calendar_embed = discord.Embed(title=title, color=color)        
         calendar_embed.add_field(name='Number of events', value=len(events))
         calendar_embed.add_field(name='Event Name, Event Date, Event Time, Location, Contact', value=event_list, inline=False)
 
@@ -169,25 +193,30 @@ def create_event_embed(title, event):
     except Exception as e:
         print(f'Error: {e}')
 
-# '''
-#     A loop to check reminders every 30 minutes (adjust as needed)
-# '''
-# @tasks.loop(minutes=30)
-# async def check_reminders():
-#     events = get_upcoming_events()
+'''
+    A loop to send reminders every 12 hours
+'''
+@tasks.loop(hours=12)
+async def check_reminders():
+    # Refresh database & count how many events saved in updated database
+    refresh_database()
 
-#     for event in events:
-#         # # Calculate the time remaining until the event's deadline
-#         # time_until_deadline = event['deadline'] - datetime.now()
+    try:
+        # get all events from today to tmr
+        today = date.today()
+        tmr = today + timedelta(days=1)
+        upcoming_events = get_upcoming_events(today, tmr)
+        guild = bot.get_guild(SERVER_ID)
 
-#         # # Define the time threshold for sending reminders (e.g., 1 hour)
-#         # reminder_threshold = timedelta(hours=1)
-
-#         # if time_until_deadline < reminder_threshold:
-#         #     # Send a reminder message to the designated Discord channel
-#         #     channel_id = event['channel_id']
-#         #     channel = bot.get_channel(channel_id)
-#         #     await channel.send(f"Reminder: {event['name']} is coming up soon!")
+        if upcoming_events and guild:
+            channel = discord.utils.get(guild.text_channels, name='general')
+            if channel:
+                calendar_embed = create_calendar_embed('Upcoming deadline/events', upcoming_events, color['red'])
+                if not calendar_embed:
+                    raise Exception('There is currently no event on record. Start adding by using `.add_event` command now!')
+                await channel.send(embed=calendar_embed)
+    except Exception as e:
+        print(f'Error: {e}')
 
 '''
     Handling event
@@ -196,11 +225,9 @@ def create_event_embed(title, event):
 @bot.event
 async def on_ready():
     print(f'\n{bot.user} has connected to Discord!\n')
-    try:
-        # check_reminders.start()
-        
-        # Refresh database & count how many events saved in updated database
-        refresh_database()
+    try:        
+        # start the loop to auto refresh calendar and send reminder if event is coming
+        check_reminders.start()
 
         # Find all events happening today
         count = cursor.execute('''
@@ -210,7 +237,7 @@ async def on_ready():
         count_event_today = count.fetchone()[0]
 
         event_today_msg = f' There are {count_event_today} event(s) happening today.' if count_event_today else ''
-
+        
         # Send welcome message
         guild = bot.get_guild(SERVER_ID)
         if guild:
@@ -368,7 +395,7 @@ async def todo(ctx, contact):
         events = cursor.fetchall()
 
         # Create & send embed of todo list
-        calendar_embed = create_calendar_embed(f'Todo calendar for {contact.capitalize()}', events)
+        calendar_embed = create_calendar_embed(f'Todo calendar for {contact.capitalize()}', events, color['blue'])
         if not calendar_embed:
             raise Exception(f'No task todo for {contact.capitalize()}.')
         await ctx.send(embed=calendar_embed)
@@ -391,8 +418,7 @@ async def calendar(ctx, option=None, additional_arg=None):
         # Display entire calendar / calendar of the week
         if not option or option == '-a':
             # Obtain list of events from database
-            cursor.execute('SELECT * FROM events')
-            events = cursor.fetchall()
+            events = get_all_events()
             title += 'Current semester'
             num_events = len(events)
         else:
@@ -422,7 +448,7 @@ async def calendar(ctx, option=None, additional_arg=None):
             events = cursor.fetchall()
 
         # Create & send embed of calendar
-        calendar_embed = create_calendar_embed(title, events)
+        calendar_embed = create_calendar_embed(title, events, color['blue'])
         if not calendar_embed:
             raise Exception(no_record_msg)
         await ctx.send(embed=calendar_embed)
@@ -458,7 +484,7 @@ async def clear_events(ctx):
 @bot.command()
 async def count_events(ctx):
     try:
-        await ctx.send(f'There are currently {num_events} events on the record.')
+        await ctx.send(f'There are currently {num_events} event(s) on the record.')
     except Exception as e:
         await ctx.send(f'Error: {e}')
 
