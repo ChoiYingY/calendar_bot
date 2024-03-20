@@ -1,7 +1,7 @@
 # Discord Calendar Bot
 
 ## Description
-This is a Discord command bot that is developed to act as a calendar that manages upcoming events & to-do tasks for members within a Discord Channel, such as executive board members of student organizations at Stony Brook.
+This is a Discord command bot developed to act as a calendar that manages upcoming events & to-do tasks for members within a Discord Channel.
 
 ## Usage Menu for Bot Commands
 | Command                                                                          | Description                                                                                     |
@@ -16,4 +16,4 @@ This is a Discord command bot that is developed to act as a calendar that manage
 | `.calendar [optional: <-a> or <-w> or <-m> <target_month>]`                      | View all events from the entire/weekly/monthly calendar<br> `<-a>` for all,<br> `<-w>` for the current week,<br>`<-m>` for the current month and a specific month if enter along with arg <target_month>.                                  |
 | `.refresh_calendar`                                                              | Refresh the calendar by removing outdated events.                                               |
 | `.count_events`                                                                  | Count the number of upcoming events.                                                            |
-| `.exit`                                                                          | Exit to stop bot from running.                                                                  |
+| `.exit`                                                                          | Exit to stop the bot from running.                                                                  |
